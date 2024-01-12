@@ -1,151 +1,219 @@
-#include "M5Atom.h"
+#include <M5Atom.h>
+#include <SD.h>
 #include <SPI.h>
-#include "FS.h"
-#include "SD.h"
-#include <WiFi.h>
 #include <TinyGPS++.h>
+#include <WiFi.h>
 
+// LED
+bool ledState = false;
+bool buttonLedState = true;
+
+#define RED 0xff0000
+#define GREEN 0x00ff00
+#define BLUE 0x0000ff
+#define YELLOW 0xffff00
+#define PURPLE 0x800080
+#define CYAN 0x00ffff
+#define WHITE 0xffffff
+#define OFF 0x000000
+
+// GPS and Filesys
 TinyGPSPlus gps;
-String fileName;
-
-const int maxMACs = 75;
-String macAddressArray[maxMACs];
+char fileName[50];
+const int maxMACs = 150;  // TESTING: buffer size
+char macAddressArray[maxMACs][20];
 int macArrayIndex = 0;
 
+// Network Scanning
+const int popularChannels[] = { 1, 6, 11 };
+const int standardChannels[] = { 2, 3, 4, 5, 7, 8, 9, 10 };
+const int rareChannels[] = { 12, 13, 14 };  // Depending on region
+int timePerChannel[14] = { 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200 };
+
 void setup() {
-  // Initialize Serial for debugging
   Serial.begin(115200);
   Serial.println("Starting...");
-
   M5.begin(true, false, true);
-  SPI.begin(23, 33, 19, -1);  // Adjust for your SPI pins
-
-  // Check if SD Card is present
-  if (!SD.begin(-1, SPI, 40000000)) {
-    Serial.println("SD Card initialization failed!");
-    M5.dis.drawpix(0, 0xff0000);  // Flash Red if TF card is missing
+  SPI.begin(23, 33, 19, -1);              // investigate the -1 assignment and esp32 boards
+  while (!SD.begin()) {  // params throw a bunch of gpio warnings, TODO assign ss 
+    Serial.println("SD Card initialization failed! Retrying...");
+    blinkLED(RED, 500);  // will hang here until SD is readable
     delay(1000);
-    return;
   }
   Serial.println("SD Card initialized.");
 
-  // Initialize WiFi
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
   Serial.println("WiFi initialized.");
 
-  // Initialize GPS
-  Serial1.begin(9600, SERIAL_8N1, 22, -1);  // GPS Serial
+  Serial1.begin(9600, SERIAL_8N1, 22, -1);
   Serial.println("GPS Serial initialized.");
-
-  // Wait for GPS to get a fix
-  Serial.println("Waiting for GPS fix...");
-  bool gpsFixObtained = false;
-  while (!gpsFixObtained) {
-    while (Serial1.available() > 0) {
-      if (gps.encode(Serial1.read()) && gps.location.isValid()) {
-        gpsFixObtained = true;
-        M5.dis.drawpix(0, 0x00ff00);  // Green LED to indicate GPS fix
-        Serial.println("GPS fix obtained.");
-        break;
-      }
-    }
-
-    if (!gpsFixObtained) {
-      M5.dis.drawpix(0, 0x800080);  // Purple LED while waiting for GPS fix
-      delay(500);
-      M5.dis.clear();
-      delay(500);
-    }
-  }
-
-  // Find a new file name and create CSV header if the file is new
-  int fileNumber = 0;
-  bool isNewFile = false;
-  do {
-    fileName = "/wifi-scans" + String(fileNumber) + ".csv";  // Ensure path starts with '/'
-    isNewFile = !SD.exists(fileName);
-    fileNumber++;
-  } while (!isNewFile);
-
-  if (isNewFile) {
-    File dataFile = SD.open(fileName, FILE_WRITE);
-    if (dataFile) {
-      dataFile.println("MAC,SSID,RSSI,Lat,Lon,UTC");
-      dataFile.close();
-      Serial.println("New file created: " + fileName);
-    }
-  } else {
-    Serial.println("Using existing file: " + fileName);
-  }
-
-  // Clear the MAC address array
-  for (int i = 0; i < maxMACs; i++) {
-    macAddressArray[i] = "";
-  }
+  waitForGPSFix();
+  initializeFile();
 }
 
 void loop() {
-  // Process available GPS data
-  while (Serial1.available() > 0) {
-    if (gps.encode(Serial1.read())) {
-      if (gps.location.isUpdated()) {
-        M5.dis.drawpix(0, 0x00ff00);  // Green LED for updated location
-        Serial.println("GPS Location Updated.");
-      }
-    }
+  static unsigned long lastBlinkTime = 0;
+  const unsigned long blinkInterval = 3000;
+
+  M5.update();
+
+  if (M5.Btn.wasPressed()) {
+    buttonLedState = !buttonLedState;
+    delay(50);
   }
 
-  // Check if GPS has a valid location
+  while (Serial1.available() > 0) {
+    gps.encode(Serial1.read());
+  }
+
   if (gps.location.isValid()) {
+    unsigned long currentMillis = millis();  //get the time here for accurate blinks
+    if (currentMillis - lastBlinkTime >= blinkInterval && buttonLedState) {
+      M5.dis.drawpix(0, GREEN);  // Flash green without a static blink
+      delay(120);
+      M5.dis.clear();
+      lastBlinkTime = currentMillis;
+    }
+
     float lat = gps.location.lat();
     float lon = gps.location.lng();
-    char utc[11];
-    sprintf(utc, "%02d:%02d:%02d", gps.time.hour(), gps.time.minute(), gps.time.second());
-    Serial.printf("Lat: %f, Lon: %f, UTC: %s\n", lat, lon, utc);
-
-    int numNetworks = WiFi.scanNetworks();
-    for (int i = 0; i < numNetworks; i++) {
-      String currentMAC = WiFi.BSSIDstr(i);
-
-      // Check if MAC is in the array
-      bool macFound = false;
-      for (int j = 0; j < maxMACs; j++) {
-        if (macAddressArray[j] == currentMAC) {
-          macFound = true;
-          break;
+    float altitude = gps.altitude.meters();
+    float accuracy = gps.hdop.hdop();
+    char utc[21];
+    sprintf(utc, "%04d-%02d-%02d %02d:%02d:%02d", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second());
+    // Dynamic async per-channel scanning
+    for (int channel = 1; channel <= 14; channel++) {
+      int numNetworks = WiFi.scanNetworks(false, true, false, timePerChannel[channel - 1], channel);
+      for (int i = 0; i < numNetworks; i++) {
+        char currentMAC[20];
+        strcpy(currentMAC, WiFi.BSSIDstr(i).c_str());
+        if (!isMACSeen(currentMAC)) {
+          strcpy(macAddressArray[macArrayIndex++], currentMAC);
+          if (macArrayIndex >= maxMACs) macArrayIndex = 0;
+          char dataString[300];
+          snprintf(dataString, sizeof(dataString), "%s,\"%s\",%s,%s,%d,%d,%.6f,%.6f,%.2f,%.2f,WIFI", currentMAC, WiFi.SSID(i).c_str(), getAuthType(WiFi.encryptionType(i)), utc, WiFi.channel(i), WiFi.RSSI(i), lat, lon, altitude, accuracy);
+          logData(dataString);
         }
       }
-
-      // Skip if MAC is found
-      if (macFound) {
-        continue;
-      }
-
-      // Add MAC to the top of the array and shift others down
-      for (int j = maxMACs - 1; j > 0; j--) {
-        macAddressArray[j] = macAddressArray[j - 1];
-      }
-      macAddressArray[0] = currentMAC;
-
-      // Record data to SD card
-      String dataString = currentMAC + "," + WiFi.SSID(i) + "," + String(WiFi.RSSI(i)) + "," + String(lat, 6) + "," + String(lon, 6) + "," + utc;
-
-      File dataFile = SD.open(fileName, FILE_APPEND);
-      if (dataFile) {
-        dataFile.println(dataString);
-        dataFile.close();
-        M5.dis.drawpix(0, 0x0000ff);  // Flash Blue for each new Wi-Fi network
-        delay(200);
-        M5.dis.clear();  // Clear the LED after flashing
-        Serial.println("Data written: " + dataString);
-      } else {
-        Serial.println("Error opening " + fileName);
-      }
+      // Update the scan duration for this channel based on the results
+      updateTimePerChannel(channel, numNetworks);
     }
   } else {
-    M5.dis.drawpix(0, 0x800080);  // Purple LED if waiting for GPS fix
+    blinkLED(PURPLE, 500);
   }
-  delay(100);  // Short delay for loop iteration
+  delay(50);  //just enough to let the GPS catch up
+}
+
+void blinkLED(uint32_t color, unsigned long interval) {
+  static unsigned long previousBlinkMillis = 0;
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousBlinkMillis >= interval) {
+    ledState = !ledState;
+    M5.dis.drawpix(0, ledState ? color : OFF);
+    previousBlinkMillis = currentMillis;
+  }
+}
+
+void waitForGPSFix() {
+  Serial.println("Waiting for GPS fix...");
+  while (!gps.location.isValid()) {
+    if (Serial1.available() > 0) {
+      gps.encode(Serial1.read());
+    }
+    blinkLED(PURPLE, 150);
+  }
+  M5.dis.clear();
+  Serial.println("GPS fix obtained.");
+}
+
+void initializeFile() {
+  int fileNumber = 0;
+  bool isNewFile = false;
+  char fileDateStamp[16];
+  sprintf(fileDateStamp, "%04d-%02d-%02d-", gps.date.year(), gps.date.month(), gps.date.day());
+  do {
+    snprintf(fileName, sizeof(fileName), "/AtomWigler-%s%d.csv", fileDateStamp, fileNumber);
+    isNewFile = !SD.exists(fileName);
+    fileNumber++;
+  } while (!isNewFile);
+  if (isNewFile) {
+    File dataFile = SD.open(fileName, FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("WigleWifi-1.4,appRelease=1.300000,model=GPS Kit,release=1.100000F+00,device=M5ATOM,display=NONE,board=ESP32,brand=M5");
+      dataFile.println("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type");
+      dataFile.close();
+      Serial.println("New file created: " + String(fileName));
+    }
+  } else {
+    Serial.println("Using existing file: " + String(fileName));
+  }
+}
+
+bool isMACSeen(const char* mac) {
+  for (int i = 0; i < macArrayIndex; i++) {
+    if (strcmp(macAddressArray[i], mac) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void logData(const char* data) {
+  File dataFile = SD.open(fileName, FILE_APPEND);
+  if (dataFile) {
+    dataFile.println(data);
+    dataFile.close();
+  } else {
+    Serial.println("Error opening " + String(fileName));
+    blinkLED(RED, 500);
+  }
+}
+
+const char* getAuthType(uint8_t wifiAuth) {
+  switch (wifiAuth) {
+    case WIFI_AUTH_OPEN:
+      return "[OPEN]";
+    case WIFI_AUTH_WEP:
+      return "[WEP]";
+    case WIFI_AUTH_WPA_PSK:
+      return "[WPA_PSK]";
+    case WIFI_AUTH_WPA2_PSK:
+      return "[WPA2_PSK]";
+    case WIFI_AUTH_WPA_WPA2_PSK:
+      return "[WPA_WPA2_PSK]";
+    case WIFI_AUTH_WPA2_ENTERPRISE:
+      return "[WPA2_ENTERPRISE]";
+    case WIFI_AUTH_WPA3_PSK:
+      return "[WPA3_PSK]";
+    case WIFI_AUTH_WPA2_WPA3_PSK:
+      return "[WPA2_WPA3_PSK]";
+    case WIFI_AUTH_WAPI_PSK:
+      return "[WAPI_PSK]";
+    default:
+      return "[UNDEFINED]";
+  }
+}
+
+// TESTING: algo for timePerChan
+void updateTimePerChannel(int channel, int networksFound) {
+  const int FEW_NETWORKS_THRESHOLD = 1;
+  const int MANY_NETWORKS_THRESHOLD = 5;
+  const int TIME_INCREMENT = 50;  // how many ms to adjust by
+  const int MAX_TIME = 500;
+  const int MIN_TIME = 100;
+
+  if (networksFound >= MANY_NETWORKS_THRESHOLD) {
+    timePerChannel[channel - 1] += TIME_INCREMENT;
+    if (timePerChannel[channel - 1] > MAX_TIME) {
+      timePerChannel[channel - 1] = MAX_TIME;
+    }
+  } else if (networksFound <= FEW_NETWORKS_THRESHOLD) {
+    timePerChannel[channel - 1] -= TIME_INCREMENT;
+    if (timePerChannel[channel - 1] < MIN_TIME) {
+      timePerChannel[channel - 1] = MIN_TIME;
+    }
+  }
 }
