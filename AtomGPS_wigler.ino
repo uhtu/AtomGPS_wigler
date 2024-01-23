@@ -23,19 +23,19 @@ char fileName[50];
 const int maxMACs = 150;  // TESTING: buffer size
 char macAddressArray[maxMACs][20];
 int macArrayIndex = 0;
-
+int numSats = 0;
 // Network Scanning
 const int popularChannels[] = { 1, 6, 11 };
 const int standardChannels[] = { 2, 3, 4, 5, 7, 8, 9, 10 };
 const int rareChannels[] = { 12, 13, 14 };  // Depending on region
-int timePerChannel[14] = { 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200 };
+int timePerChannel[14] = { 300, 200, 200, 200, 200, 300, 200, 200, 200, 200, 300, 200, 200, 200 };
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Starting...");
   M5.begin(true, false, true);
   SPI.begin(23, 33, 19, -1);              // investigate the -1 assignment and esp32 boards
-  while (!SD.begin()) {  // params throw a bunch of gpio warnings, TODO assign ss 
+  while (!SD.begin(-1, SPI, 40000000)) {  // params throw a bunch of gpio warnings, TODO assign ss
     Serial.println("SD Card initialization failed! Retrying...");
     blinkLED(RED, 500);  // will hang here until SD is readable
     delay(1000);
@@ -54,11 +54,7 @@ void setup() {
 }
 
 void loop() {
-  static unsigned long lastBlinkTime = 0;
-  const unsigned long blinkInterval = 3000;
-
   M5.update();
-
   if (M5.Btn.wasPressed()) {
     buttonLedState = !buttonLedState;
     delay(50);
@@ -69,12 +65,11 @@ void loop() {
   }
 
   if (gps.location.isValid()) {
-    unsigned long currentMillis = millis();  //get the time here for accurate blinks
-    if (currentMillis - lastBlinkTime >= blinkInterval && buttonLedState) {
+    // Use crap
+    if (buttonLedState == true) {
       M5.dis.drawpix(0, GREEN);  // Flash green without a static blink
-      delay(120);
+      delay(80);
       M5.dis.clear();
-      lastBlinkTime = currentMillis;
     }
 
     float lat = gps.location.lat();
@@ -101,9 +96,9 @@ void loop() {
       updateTimePerChannel(channel, numNetworks);
     }
   } else {
-    blinkLED(PURPLE, 500);
+    blinkLED(PURPLE, 250);
   }
-  delay(50);  //just enough to let the GPS catch up
+  delay(75);
 }
 
 void blinkLED(uint32_t color, unsigned long interval) {
@@ -123,7 +118,7 @@ void waitForGPSFix() {
     if (Serial1.available() > 0) {
       gps.encode(Serial1.read());
     }
-    blinkLED(PURPLE, 150);
+    blinkLED(PURPLE, 250);
   }
   M5.dis.clear();
   Serial.println("GPS fix obtained.");
@@ -163,7 +158,7 @@ bool isMACSeen(const char* mac) {
 
 void logData(const char* data) {
   File dataFile = SD.open(fileName, FILE_APPEND);
-  if (dataFile) {
+  if (dataFile && data) {
     dataFile.println(data);
     dataFile.close();
   } else {
@@ -175,43 +170,83 @@ void logData(const char* data) {
 const char* getAuthType(uint8_t wifiAuth) {
   switch (wifiAuth) {
     case WIFI_AUTH_OPEN:
-      return "[OPEN]";
+      return "[]";
+      break;
+
     case WIFI_AUTH_WEP:
       return "[WEP]";
+      break;
+
     case WIFI_AUTH_WPA_PSK:
-      return "[WPA_PSK]";
+      return "[WPA]";
+      break;
+
     case WIFI_AUTH_WPA2_PSK:
-      return "[WPA2_PSK]";
+      return "[WPA2]";
+      break;
+
     case WIFI_AUTH_WPA_WPA2_PSK:
-      return "[WPA_WPA2_PSK]";
+      return "[WPA2]";
+      break;
+
     case WIFI_AUTH_WPA2_ENTERPRISE:
-      return "[WPA2_ENTERPRISE]";
+      return "[WPA2]";
+      break;
+
     case WIFI_AUTH_WPA3_PSK:
-      return "[WPA3_PSK]";
+      return "[WPA3]";
+      break;
+
     case WIFI_AUTH_WPA2_WPA3_PSK:
-      return "[WPA2_WPA3_PSK]";
+      return "[WPA3]";
+      break;
+
     case WIFI_AUTH_WAPI_PSK:
-      return "[WAPI_PSK]";
+      return "[WAPI]";
+      break;
+
     default:
       return "[UNDEFINED]";
   }
 }
 
+
+bool findInArray(int value, const int* array, int size) {
+  for (int i = 0; i < size; i++) {
+    if (array[i] == value) return true;
+  }
+  return false;
+}
+
 // TESTING: algo for timePerChan
 void updateTimePerChannel(int channel, int networksFound) {
   const int FEW_NETWORKS_THRESHOLD = 1;
-  const int MANY_NETWORKS_THRESHOLD = 5;
-  const int TIME_INCREMENT = 50;  // how many ms to adjust by
+  const int MANY_NETWORKS_THRESHOLD = 8;
+  const int POPULAR_TIME_INCREMENT = 75;   // Higher increment for popular channels
+  const int STANDARD_TIME_INCREMENT = 50;  // Standard increment
+  const int RARE_TIME_INCREMENT = 30;      // Lower increment for rare channels
   const int MAX_TIME = 500;
-  const int MIN_TIME = 100;
+  const int MIN_TIME = 50;
 
+  int timeIncrement;
+
+  // Determine the time increment based on channel type
+  if (findInArray(channel, popularChannels, sizeof(popularChannels) / sizeof(popularChannels[0]))) {
+    timeIncrement = POPULAR_TIME_INCREMENT;
+  } else if (findInArray(channel, rareChannels, sizeof(rareChannels) / sizeof(rareChannels[0]))) {
+    timeIncrement = RARE_TIME_INCREMENT;
+  } else {
+    timeIncrement = STANDARD_TIME_INCREMENT;
+  }
+
+  // Adjust the time per channel based on the number of networks found
   if (networksFound >= MANY_NETWORKS_THRESHOLD) {
-    timePerChannel[channel - 1] += TIME_INCREMENT;
+    timePerChannel[channel - 1] += timeIncrement;
     if (timePerChannel[channel - 1] > MAX_TIME) {
       timePerChannel[channel - 1] = MAX_TIME;
     }
   } else if (networksFound <= FEW_NETWORKS_THRESHOLD) {
-    timePerChannel[channel - 1] -= TIME_INCREMENT;
+    timePerChannel[channel - 1] -= timeIncrement;
     if (timePerChannel[channel - 1] < MIN_TIME) {
       timePerChannel[channel - 1] = MIN_TIME;
     }
