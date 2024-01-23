@@ -50,7 +50,7 @@ After flashing, the device starts scanning for Wi-Fi networks, indicating the st
 
 **LED Indicators:**
 > [!NOTE]  
->- Press the button during scanning to disable the LED.
+>- Press and hold the button during scanning to disable the LED.
 - RED blink if the SD card is missing/write error.
 - PURPLE blink while waiting for a GPS fix.
 - GREEN blink during scanning (Optional).
