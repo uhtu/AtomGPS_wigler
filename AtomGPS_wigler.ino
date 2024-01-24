@@ -23,7 +23,7 @@ char fileName[50];
 const int maxMACs = 150;  // TESTING: buffer size
 char macAddressArray[maxMACs][20];
 int macArrayIndex = 0;
-int numSats = 0;
+
 // Network Scanning
 const int popularChannels[] = { 1, 6, 11 };
 const int standardChannels[] = { 2, 3, 4, 5, 7, 8, 9, 10 };
