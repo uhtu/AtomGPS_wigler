@@ -6,7 +6,12 @@
 
 // LED
 bool ledState = false;
-bool buttonLedState = true;
+
+// state machine goes OFF -> BLINKY -> COUNTY -> OFF
+#define LED_OFF    0x00
+#define LED_BLINKY 0x01
+#define LED_COUNTY 0x02
+int buttonLedState = LED_BLINKY;
 
 #define RED 0xff0000
 #define GREEN 0x00ff00
@@ -23,12 +28,19 @@ char fileName[50];
 const int maxMACs = 150;  // TESTING: buffer size
 char macAddressArray[maxMACs][20];
 int macArrayIndex = 0;
-
+int loggedNets=0;
 // Network Scanning
 const int popularChannels[] = { 1, 6, 11 };
 const int standardChannels[] = { 2, 3, 4, 5, 7, 8, 9, 10 };
 const int rareChannels[] = { 12, 13, 14 };  // Depending on region
 int timePerChannel[14] = { 300, 200, 200, 200, 200, 300, 200, 200, 200, 200, 300, 200, 200, 200 };
+// thanks, Addison Sears-Collins! https://automaticaddison.com/how-to-display-a-string-as-morse-code-on-an-led-using-arduino/
+const int dot_duration = 200;
+const char *numbers[] = {
+  // The numbers 0-9 in Morse code
+  "-----", ".----", "..---", "...--", "....-", ".....", "-....",
+  "--...", "---..", "----."
+};
 
 void setup() {
   Serial.begin(115200);
@@ -56,7 +68,18 @@ void setup() {
 void loop() {
   M5.update();
   if (M5.Btn.wasPressed()) {
-    buttonLedState = !buttonLedState;
+    switch (buttonLedState){
+      case LED_OFF:
+        buttonLedState = LED_BLINKY;
+        break;
+      case LED_BLINKY:
+        buttonLedState = LED_COUNTY;
+        break;
+      case LED_COUNTY:
+        buttonLedState = LED_OFF;
+        break;
+    }
+//    buttonLedState = !buttonLedState;
     delay(50);
   }
 
@@ -66,11 +89,14 @@ void loop() {
 
   if (gps.location.isValid()) {
     // Use crap
-    if (buttonLedState == true) {
+    if (buttonLedState == LED_BLINKY) {
       M5.dis.drawpix(0, GREEN);  // Flash green without a static blink
       delay(80);
       M5.dis.clear();
-    }
+    } else if (buttonLedState == LED_COUNTY){
+      // display loggedNets in morse counter
+      flash_counter(loggedNets);
+    } // else nothing
 
     float lat = gps.location.lat();
     float lon = gps.location.lng();
@@ -90,6 +116,7 @@ void loop() {
           char dataString[300];
           snprintf(dataString, sizeof(dataString), "%s,\"%s\",%s,%s,%d,%d,%.6f,%.6f,%.2f,%.2f,WIFI", currentMAC, WiFi.SSID(i).c_str(), getAuthType(WiFi.encryptionType(i)), utc, WiFi.channel(i), WiFi.RSSI(i), lat, lon, altitude, accuracy);
           logData(dataString);
+          loggedNets++;
         }
       }
       // Update the scan duration for this channel based on the results
@@ -99,6 +126,66 @@ void loop() {
     blinkLED(PURPLE, 250);
   }
   delay(75);
+}
+
+void flash_counter(int counter){
+    if (counter ==0){
+       flash_morse_code(numbers[0]);
+       return;
+    }
+    // walk the decimal digits and write them out serially
+    // nnnnn
+    int mask = 1000000;
+    bool seen = false; // seen any nonzero digits
+    while (counter > 0){
+      int idx = counter / mask;
+      if (idx != 0){
+        seen = true;
+      }
+      if (seen) {
+        flash_morse_code(numbers[idx]);
+      }
+      counter -= (mask*idx);
+      mask /= 10;
+    }
+}
+
+/**
+  *  Flashes the Morse code for the input letter or number
+  *  @param morse_code pointer to the morse code
+  */
+void flash_morse_code(const char *morse_code) {
+    
+  unsigned int i = 0;
+    
+  // Read the dots and dashes and flash accordingly
+  while (morse_code[i] != NULL) {
+    flash_dot_or_dash(morse_code[i]);
+    i++;
+  }
+    
+  // Space between two letters is equal to three dots
+  delay(dot_duration * 3);    
+}
+
+/**
+  *  Flashes the dot or dash in the Morse code
+  *  @param dot_or_dash character that is a dot or a dash
+  */
+void flash_dot_or_dash(char dot_or_dash) {
+  M5.dis.drawpix(0, BLUE);
+
+  if (dot_or_dash == '.') { // If it is a dot
+    delay(dot_duration);           
+  }
+  else { // Has to be a dash...equal to three dots
+    delay(dot_duration * 3);           
+  }
+   
+   M5.dis.clear();
+
+  // Give space between parts of the same letter...equal to one dot
+  delay(dot_duration); 
 }
 
 void blinkLED(uint32_t color, unsigned long interval) {
