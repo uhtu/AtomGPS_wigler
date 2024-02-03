@@ -34,13 +34,22 @@ const int popularChannels[] = { 1, 6, 11 };
 const int standardChannels[] = { 2, 3, 4, 5, 7, 8, 9, 10 };
 const int rareChannels[] = { 12, 13, 14 };  // Depending on region
 int timePerChannel[14] = { 300, 200, 200, 200, 200, 300, 200, 200, 200, 200, 300, 200, 200, 200 };
-// thanks, Addison Sears-Collins! https://automaticaddison.com/how-to-display-a-string-as-morse-code-on-an-led-using-arduino/
+// rewritten based on original work from Addison Sears-Collins. thanks! https://automaticaddison.com/how-to-display-a-string-as-morse-code-on-an-led-using-arduino/
 const int dot_duration = 200;
-const char *numbers[] = {
-  // The numbers 0-9 in Morse code
-  "-----", ".----", "..---", "...--", "....-", ".....", "-....",
-  "--...", "---..", "----."
-};
+
+// The numbers 0-9 in Morse code
+// encode the morse as 0 for ., 1 for -, using the low 5 bits
+const uint8_t numbytes[] = {
+  0x1f, // -----
+  0x0f, // .----
+  0x07, // ..---
+  0x03, // ...--
+  0x01, // ....-
+  0x00, // .....
+  0x10, // -....
+  0x18, // --...
+  0x1c, // ---..
+  0x1e};// ----.
 
 void setup() {
   Serial.begin(115200);
@@ -79,7 +88,7 @@ void loop() {
         buttonLedState = LED_OFF;
         break;
     }
-//    buttonLedState = !buttonLedState;
+
     delay(50);
   }
 
@@ -95,7 +104,7 @@ void loop() {
       M5.dis.clear();
     } else if (buttonLedState == LED_COUNTY){
       // display loggedNets in morse counter
-      flash_counter(loggedNets);
+      flash_counter(loggedNets, BLUE); // should use White for WIFI, blue for Blootoof
     } // else nothing
 
     float lat = gps.location.lat();
@@ -128,64 +137,72 @@ void loop() {
   delay(75);
 }
 
-void flash_counter(int counter){
-    if (counter ==0){
-       flash_morse_code(numbers[0]);
-       return;
+/**
+ * blink out a counter in decimal morse code
+ * @param counter the value to emit
+ * @param color the color to flash
+ */
+void flash_counter(int counter, struct CRGB color){
+  if (counter <= 0) {
+      flash_morse_code(numbytes[0], color);
+      return;
+  }
+  // walk the decimal digits and write them out serially
+  // the largest value representable in a 32bit int is 1s of billions
+  int mask = 1000000000;
+  bool seen = false; // seen any nonzero digits
+  while (counter > 0){
+    int idx = counter / mask;
+    if (idx != 0) { // don't blink out leading zeros
+      seen = true;
     }
-    // walk the decimal digits and write them out serially
-    // nnnnn
-    int mask = 1000000;
-    bool seen = false; // seen any nonzero digits
-    while (counter > 0){
-      int idx = counter / mask;
-      if (idx != 0){
-        seen = true;
-      }
-      if (seen) {
-        flash_morse_code(numbers[idx]);
-      }
-      counter -= (mask*idx);
-      mask /= 10;
+    if (seen) {
+      flash_morse_code(numbytes[idx], color);
     }
+    counter -= (mask*idx);
+    mask /= 10;
+  }
 }
 
 /**
-  *  Flashes the Morse code for the input letter or number
-  *  @param morse_code pointer to the morse code
+  *  Flashes the Morse code for the input bitmask. caller ensures the high three bits are zero.
+  *  @param morse_code bitmask value of the morse code digit
+  *  @param color the color to flash
   */
-void flash_morse_code(const char *morse_code) {
-    
-  unsigned int i = 0;
-    
+void flash_morse_code(const uint8_t morse_code, struct CRGB color) {
+
+  // walk morse_code from mask start to end, shifting right by 1 each time.
+  // mask & code == 0 is a dot, mask & code != 0 is a dash
+  uint8_t mask = 0x10; // start selecting bit 5
+
   // Read the dots and dashes and flash accordingly
-  while (morse_code[i] != NULL) {
-    flash_dot_or_dash(morse_code[i]);
-    i++;
+  while (mask != 0) {
+    flash_dot_or_dash( (mask & morse_code) != 0, color );
+    mask = mask >> 1;
   }
-    
+
   // Space between two letters is equal to three dots
-  delay(dot_duration * 3);    
+  delay(dot_duration * 3);
 }
 
 /**
   *  Flashes the dot or dash in the Morse code
-  *  @param dot_or_dash character that is a dot or a dash
+  *  @param dash true if dash, false for dot
+  *  @param color the color to flash
   */
-void flash_dot_or_dash(char dot_or_dash) {
-  M5.dis.drawpix(0, BLUE);
+void flash_dot_or_dash(bool dash, struct CRGB color) {
+  M5.dis.drawpix(0, color);
 
-  if (dot_or_dash == '.') { // If it is a dot
-    delay(dot_duration);           
+  if (dash) { // If it is a dash...equal to three dots
+    delay(dot_duration * 3);
+  } else { // Has to be a dot
+    delay(dot_duration);
   }
-  else { // Has to be a dash...equal to three dots
-    delay(dot_duration * 3);           
-  }
-   
-   M5.dis.clear();
+
+  M5.dis.clear();
 
   // Give space between parts of the same letter...equal to one dot
-  delay(dot_duration); 
+  delay(dot_duration);
 }
 
 void blinkLED(uint32_t color, unsigned long interval) {
